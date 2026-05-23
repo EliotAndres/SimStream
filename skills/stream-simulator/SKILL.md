@@ -55,13 +55,26 @@ After toggling either permission the terminal must be **fully quit and relaunche
 
 **macOS VMs (Tart, etc.):** TCC prompts don't appear. If System Integrity Protection is disabled (default on Tart guests), the user can force-grant by editing `/Library/Application Support/com.apple.TCC/TCC.db` directly. Don't attempt this on a normal Mac.
 
-## 4. Boot a simulator
+## 4. Boot a simulator — REQUIRED BEFORE LAUNCH
+
+SimStream's touch pipeline aborts with `[ERROR][Touch] No booted iOS Simulator found` if no simulator is running when `swift run SimulatorStream` starts. `start.sh` only prints a soft warning — do not rely on it. **You must verify a simulator is booted before step 5.**
+
+Check:
 
 ```sh
-xcrun simctl list devices booted
+xcrun simctl list devices booted | grep -q "(Booted)" && echo "ok" || echo "NONE BOOTED"
 ```
 
-If nothing is booted, open Xcode → Open Developer Tool → Simulator (or `open -a Simulator`) and let one boot. `start.sh` warns but does not abort if no simulator is booted — the stream will just be empty until one starts.
+If none is booted, boot one and wait for it to come up (Simulator.app launch is async):
+
+```sh
+open -a Simulator
+until xcrun simctl list devices booted | grep -q "(Booted)"; do sleep 1; done
+```
+
+`open -a Simulator` boots the last-used device. To pick a specific one: `xcrun simctl list devices available` to find a UDID, then `xcrun simctl boot <UDID>`.
+
+Only proceed to step 5 once a simulator is confirmed Booted.
 
 ## 5. Launch
 
@@ -88,6 +101,7 @@ Map the user's error to a fix:
 | `Python venv missing (.venv/bin/python)` | `install_idb.sh` never ran | `./install_idb.sh` |
 | `'.venv/bin/idb' missing` | venv exists but `fb-idb` not installed | Delete `.venv` and re-run `./install_idb.sh` |
 | `port 3738 is busy` | Prior SimStream still running or another service on the port | `lsof -i :3738 -P -n` then `kill <pid>`, or run with `PORT=xxxx swift run SimulatorStream` |
+| `[ERROR][Touch] No booted iOS Simulator found` | SimStream was launched before any simulator was Booted | Stop SimStream, boot a simulator (`open -a Simulator` then wait for `xcrun simctl list devices booted` to show `(Booted)`), then re-run `./start.sh` |
 | Black frames in browser, no error | Screen Recording permission not granted to terminal | Grant in System Settings, then **fully quit and relaunch the terminal** |
 | Touches in browser don't reach simulator | Accessibility permission not granted, or no simulator booted | Grant Accessibility (relaunch terminal); boot a simulator |
 | `kVTVideoEncoderNotAvailableNowErr` in logs, stream never starts | VideoToolbox HW encoder unavailable (common in macOS VMs) | The encoder auto-falls back to SW after a few failed callbacks. To skip HW from frame 1: `SIMULATOR_STREAM_PREFER_SOFTWARE_ENCODER=1 ./start.sh` |
