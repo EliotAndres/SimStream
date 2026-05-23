@@ -21,13 +21,22 @@ final class TouchInjector {
     /// Device content area height in macOS points.
     private var contentHeightMacOS: Double = 0
 
-
-    init() {}
+    // ─── Readiness state — touches are only valid once everything resolved.
+    /// `true` once UDID + screen size + bridge process are all up.
+    private var ready: Bool = false
+    /// Human-readable reason captured by the last failure path.
+    private var unreadyReason: String = "touch pipeline not initialised yet"
+    /// Suppress repeat logging while the failure mode is unchanged.
+    private var lastLoggedUnreadyReason: String?
+    /// Resolve is expensive (idb shells out, retries) — avoid stacking concurrent passes.
+    private var resolveInFlight: Bool = false
 
     func pressHome() {
         queue.async { [weak self] in
-            guard let self, let udid = self.simulatorUDID else {
-                print("[Touch] pressHome: simulator not resolved yet")
+            guard let self else { return }
+            guard let udid = self.simulatorUDID else {
+                self.logError("pressHome ignored — simulator not resolved yet. \(self.unreadyReason)")
+                self.kickResolveIfNeeded()
                 return
             }
             let output = self.shell("idb", "ui", "button", "HOME", "--udid", udid)
@@ -41,7 +50,11 @@ final class TouchInjector {
     }
 
     func handleTouch(_ event: TouchEvent) {
-        guard screenWidth > 0, screenHeight > 0 else { return }
+        guard ready, screenWidth > 0, screenHeight > 0 else {
+            logError("Dropping '\(event.type)' touch — \(unreadyReason)")
+            kickResolveIfNeeded()
+            return
+        }
 
         let deviceX: Double
         let deviceY: Double
@@ -71,15 +84,25 @@ final class TouchInjector {
         queue.async { [weak self] in
             guard let self else { return }
 
-            if self.screenWidth > 0, self.screenHeight > 0,
-               let proc = self.bridgeProcess, proc.isRunning {
-                print("[Touch] Skipping resolve — touch pipeline already ready")
+            if self.ready, let proc = self.bridgeProcess, proc.isRunning {
                 return
             }
+            if self.resolveInFlight {
+                return
+            }
+            self.resolveInFlight = true
+            defer { self.resolveInFlight = false }
 
             print("[Touch] Resolving simulator...")
             guard let udid = self.findBootedUDID() else {
-                print("[Touch] No booted simulator found")
+                self.markNotReady(
+                    "No booted iOS Simulator found.",
+                    troubleshoot: [
+                        "Boot one in Xcode → Simulator, or:",
+                        "    xcrun simctl boot <device-udid>",
+                        "  Then trigger any touch in the browser to retry.",
+                    ]
+                )
                 return
             }
             self.simulatorUDID = udid
@@ -90,7 +113,14 @@ final class TouchInjector {
                 self.screenHeight = size.height
                 print("[Touch] Screen size: \(size.width)x\(size.height) points")
             } else {
-                print("[Touch] Failed to query screen size after retries (idb describe-all never reported a non-zero frame)")
+                self.markNotReady(
+                    "'idb describe-all' never reported a non-zero device frame for UDID \(udid).",
+                    troubleshoot: [
+                        "  • Make sure idb_companion is installed: brew list facebook/fb/idb-companion",
+                        "  • Make sure .venv/bin/idb works: ./.venv/bin/idb describe-all --udid \(udid) --json",
+                        "  • Make sure SpringBoard has finished booting (open the Simulator and unlock).",
+                    ]
+                )
                 return
             }
 
@@ -100,12 +130,19 @@ final class TouchInjector {
                 self.contentHeightMacOS = metrics.contentHeight
                 print("[Touch] Top bar offset: \(metrics.topBarOffset) pts, window: \(metrics.windowHeight) pts, content: \(metrics.contentHeight) pts")
             } else {
-                print("[Touch] Could not detect window metrics via Accessibility, using direct mapping")
+                print("[Touch] WARN: could not detect window metrics via Accessibility — touches will use direct mapping (may be offset if video isn't cropped). Grant Accessibility permission to fix.")
             }
 
             let socketPath = "/tmp/idb/\(udid)_companion.sock"
             guard FileManager.default.fileExists(atPath: socketPath) else {
-                print("[Touch] Companion socket not found at \(socketPath)")
+                self.markNotReady(
+                    "idb_companion socket not found at \(socketPath).",
+                    troubleshoot: [
+                        "  • idb_companion should auto-start when fb-idb is invoked.",
+                        "  • Confirm it's running:    pgrep -fl idb_companion",
+                        "  • Start it manually:       idb_companion --udid \(udid) &",
+                    ]
+                )
                 return
             }
 
@@ -118,12 +155,30 @@ final class TouchInjector {
     private func startBridge(socketPath: String) {
         if let existing = bridgeProcess, existing.isRunning {
             print("[Touch] HID bridge already running (pid \(existing.processIdentifier))")
+            markReady()
             return
         }
 
         let scriptPath = self.bridgeScriptPath()
         guard FileManager.default.fileExists(atPath: scriptPath) else {
-            print("[Touch] Bridge script not found at \(scriptPath)")
+            markNotReady(
+                "Bridge script not found at \(scriptPath).",
+                troubleshoot: [
+                    "  • Re-clone the repo; idb_touch_events_bridge.py must sit at the project root.",
+                    "  • Make sure ./start.sh is run from the project root directory.",
+                ]
+            )
+            return
+        }
+
+        guard let pythonPath = resolvePython() else {
+            markNotReady(
+                "Python interpreter not found under .venv/bin/python.",
+                troubleshoot: [
+                    "  • Run ./install_idb.sh from the repo root to create the venv.",
+                    "  • Confirm: test -x ./.venv/bin/python && ./.venv/bin/python --version",
+                ]
+            )
             return
         }
 
@@ -132,10 +187,6 @@ final class TouchInjector {
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
 
-        guard let pythonPath = resolvePython() else {
-            print("[Touch] Could not find python3 executable")
-            return
-        }
         print("[Touch] Starting bridge: \(pythonPath) \(scriptPath)")
         print("[Touch] IDB_COMPANION_SOCKET=\(socketPath)")
         process.executableURL = URL(fileURLWithPath: pythonPath)
@@ -147,10 +198,35 @@ final class TouchInjector {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // When the bridge dies unexpectedly, mark the pipeline not-ready so the
+        // next touch surfaces a clear error instead of silently disappearing.
+        process.terminationHandler = { [weak self] proc in
+            guard let self else { return }
+            self.queue.async {
+                self.bridgeProcess = nil
+                self.bridgeStdin = nil
+                self.markNotReady(
+                    "Touch bridge process exited unexpectedly (code \(proc.terminationStatus), reason \(proc.terminationReason.rawValue)).",
+                    troubleshoot: [
+                        "  • Check the [Touch] Bridge stderr lines above for a Python traceback.",
+                        "  • Verify the venv still has grpclib + fb-idb installed:",
+                        "      ./.venv/bin/python -c 'import grpclib, idb'",
+                        "  • Next touch will trigger an automatic retry of the resolve step.",
+                    ]
+                )
+            }
+        }
+
         do {
             try process.run()
         } catch {
-            print("[Touch] Failed to start bridge: \(error)")
+            markNotReady(
+                "Failed to launch touch bridge subprocess: \(error)",
+                troubleshoot: [
+                    "  • Confirm the python interpreter is executable: ls -l \(pythonPath)",
+                    "  • Try running it by hand: \(pythonPath) \(scriptPath)",
+                ]
+            )
             return
         }
 
@@ -165,8 +241,6 @@ final class TouchInjector {
             while let line = self.readLine(from: outHandle) {
                 print("[Touch] Bridge stdout: \(line)")
             }
-            process.waitUntilExit()
-            print("[Touch] Bridge process exited (code \(process.terminationStatus), reason \(process.terminationReason.rawValue))")
         }
 
         // Stream stderr
@@ -177,17 +251,36 @@ final class TouchInjector {
         }
 
         print("[Touch] Bridge started (pid \(process.processIdentifier))")
+        markReady()
     }
 
     private func sendBridge(_ dict: [String: Any]) {
         guard let stdin = bridgeStdin,
+              let proc = bridgeProcess, proc.isRunning,
               let data = try? JSONSerialization.data(withJSONObject: dict),
               var json = String(data: data, encoding: .utf8) else {
+            // Either pipeline isn't up or JSON-encoding failed (shouldn't happen for our payloads).
+            logError("sendBridge dropped a touch — bridge not running or payload invalid.")
+            kickResolveIfNeeded()
             return
         }
         json += "\n"
-        queue.async {
-            stdin.write(json.data(using: .utf8)!)
+        let payload = Data(json.utf8)
+        queue.async { [weak self] in
+            guard let self else { return }
+            do {
+                try stdin.write(contentsOf: payload)
+            } catch {
+                // EPIPE / broken pipe — bridge died between the isRunning check and write.
+                self.logError("Touch write to bridge failed: \(error). Touch dropped.")
+                self.markNotReady(
+                    "Touch bridge pipe write failed (\(error)).",
+                    troubleshoot: [
+                        "  • The bridge likely just crashed; check stderr above for a Python traceback.",
+                        "  • Next touch will trigger an automatic retry.",
+                    ]
+                )
+            }
         }
     }
 
@@ -204,16 +297,16 @@ final class TouchInjector {
     }
 
     private func bridgeScriptPath() -> String {
-        // Locate scripts/touch_bridge.py relative to the built binary or the source tree
+        // Locate idb_touch_events_bridge.py relative to the built binary or the source tree
         let fm = FileManager.default
         // When running from the source tree with `swift run`
         let candidates = [
             // Relative to working directory
-            "scripts/touch_bridge.py",
+            "idb_touch_events_bridge.py",
             // Relative to executable
             URL(fileURLWithPath: CommandLine.arguments[0])
                 .deletingLastPathComponent()
-                .appendingPathComponent("../../../scripts/touch_bridge.py")
+                .appendingPathComponent("../../../idb_touch_events_bridge.py")
                 .standardized.path
         ]
         for path in candidates {
@@ -348,11 +441,11 @@ final class TouchInjector {
     /// so we locate it explicitly rather than relying on `env idb`.
     private func resolveIDB() -> String? { resolveVenvBinary("idb") }
 
-    /// Always returns an **absolute** path. Relative paths (e.g. `scripts/.venv/bin/idb`)
+    /// Always returns an **absolute** path. Relative paths (e.g. `.venv/bin/idb`)
     /// break `Process.executableURL` when cwd is not the repo root (Xcode, Finder, etc.).
     private func resolveVenvBinary(_ name: String) -> String? {
         let fm = FileManager.default
-        let suffix = "scripts/.venv/bin/\(name)"
+        let suffix = ".venv/bin/\(name)"
 
         func ok(_ path: String) -> Bool {
             fm.fileExists(atPath: path) && fm.isExecutableFile(atPath: path)
@@ -387,7 +480,7 @@ final class TouchInjector {
             process.executableURL = URL(fileURLWithPath: idbPath)
             process.arguments = args
         } else if command == "idb" {
-            print("[Touch] idb not found under scripts/.venv/bin — run ./install.sh from the repo root (needs fb-idb). Falling back to PATH.")
+            print("[ERROR][Touch] idb not found under .venv/bin — run ./install_idb.sh from the repo root (needs fb-idb). Falling back to PATH.")
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = [command] + args
         } else {
@@ -419,5 +512,44 @@ final class TouchInjector {
 
     private func snippet(_ s: String, max: Int = 400) -> String {
         s.count > max ? String(s.prefix(max)) + "…" : s
+    }
+
+    // MARK: - Readiness / diagnostics
+
+    /// Mark the pipeline up; loud-log the transition and reset error-suppression.
+    private func markReady() {
+        if !ready { print("[Touch] ✓ Touch pipeline ready — touches will now reach the simulator.") }
+        ready = true
+        lastLoggedUnreadyReason = nil
+    }
+
+    /// Mark the pipeline broken with a human-readable cause + actionable hints.
+    /// Logs at most once per distinct reason so we don't flood the console.
+    private func markNotReady(_ reason: String, troubleshoot: [String] = []) {
+        ready = false
+        unreadyReason = reason
+        if lastLoggedUnreadyReason != reason {
+            lastLoggedUnreadyReason = reason
+            print("")
+            print("[ERROR][Touch] \(reason)")
+            if !troubleshoot.isEmpty {
+                print("[Touch] Troubleshooting:")
+                for line in troubleshoot { print("[Touch] \(line)") }
+            }
+            print("")
+        }
+    }
+
+    /// Loud one-line error (no troubleshooting payload).
+    private func logError(_ message: String) {
+        print("[ERROR][Touch] \(message)")
+    }
+
+    /// If the pipeline isn't ready and no resolve is in flight, schedule one.
+    /// Called from touch paths to auto-recover after transient failures.
+    private func kickResolveIfNeeded() {
+        if !ready && !resolveInFlight {
+            resolveSimulator()
+        }
     }
 }

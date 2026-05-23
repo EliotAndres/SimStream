@@ -22,8 +22,12 @@ final class StreamingApp {
         do {
             try httpServer.start()
         } catch {
-            print("[App] Failed to start HTTP server: \(error)")
-            return
+            print("")
+            print("[FATAL] HTTP server failed to start: \(error)")
+            print("[FATAL] Most likely cause: port \(ProcessInfo.processInfo.environment["PORT"] ?? "3738") is already bound by another process.")
+            print("[FATAL]   Check with: lsof -i :\(ProcessInfo.processInfo.environment["PORT"] ?? "3738") -P -n")
+            print("[FATAL]   Then either kill that process or set PORT=<other> when launching.")
+            exit(3)
         }
 
         Task {
@@ -35,8 +39,20 @@ final class StreamingApp {
                 }
                 touchInjector.resolveSimulator()
             } catch {
-                print("[App] Failed to start capture: \(error)")
-                print("[App] Hint: Grant Screen Recording permission to Terminal in System Settings → Privacy & Security → Screen Recording")
+                print("")
+                print("════════════════════════════════════════════════════════════════════════")
+                print("[FATAL] ScreenCaptureKit failed to start a capture session.")
+                print("[FATAL] Error: \(error)")
+                print("[FATAL]")
+                print("[FATAL] Most common causes:")
+                print("[FATAL]   • Screen Recording permission was revoked, or this binary lost")
+                print("[FATAL]     trust after a rebuild. Fix:")
+                print("[FATAL]       System Settings → Privacy & Security → Screen Recording")
+                print("[FATAL]       → re-enable Terminal, then ⌘Q Terminal and reopen.")
+                print("[FATAL]   • No display attached / running headless without a virtual display.")
+                print("[FATAL]   • iOS Simulator not running. Boot one in Xcode → Simulator.")
+                print("════════════════════════════════════════════════════════════════════════")
+                exit(4)
             }
         }
     }
