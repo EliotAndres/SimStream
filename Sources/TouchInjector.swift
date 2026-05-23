@@ -113,15 +113,26 @@ final class TouchInjector {
                 self.screenHeight = size.height
                 print("[Touch] Screen size: \(size.width)x\(size.height) points")
             } else {
+                // We located a booted simulator but `idb describe-all` couldn't
+                // produce a valid frame after 30 retries. That means the touch
+                // pipeline is fundamentally broken (typical cause: stale venv
+                // shebang from a renamed repo — start.sh's preflight should
+                // have caught it, but defense-in-depth in case it didn't).
+                // Silently logging `markNotReady` and continuing would leave
+                // the HTTP server serving video with dead touches — exit loudly
+                // so the operator notices and fixes the root cause.
                 self.markNotReady(
-                    "'idb describe-all' never reported a non-zero device frame for UDID \(udid).",
+                    "'idb describe-all' never reported a non-zero device frame for UDID \(udid) after 30 attempts (≈45s) — aborting.",
                     troubleshoot: [
                         "  • Make sure idb_companion is installed: brew list facebook/fb/idb-companion",
                         "  • Make sure .venv/bin/idb works: ./.venv/bin/idb describe-all --udid \(udid) --json",
+                        "  • If the repo was renamed/moved, the venv shebangs are stale —",
+                        "    delete .venv and run ./install_idb.sh.",
                         "  • Make sure SpringBoard has finished booting (open the Simulator and unlock).",
                     ]
                 )
-                return
+                print("[FATAL][Touch] Touch pipeline unrecoverable — exiting so the failure is visible. Fix the issue above and re-run ./start.sh.")
+                exit(7)
             }
 
             if let metrics = self.detectWindowMetrics() {

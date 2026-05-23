@@ -37,14 +37,22 @@ if ! command -v idb_companion >/dev/null 2>&1; then
   fail "'idb_companion' not found. Run ./install_idb.sh (or: brew install facebook/fb/idb-companion)"
 fi
 
-# Python venv created by install_idb.sh
+# Python venv created by install_idb.sh.
+# We actually invoke the interpreter — the `-x` bit alone misses stale shebangs
+# (e.g. when the repo is renamed/moved, the venv's hard-coded interpreter path
+# points at a directory that no longer exists, and execve fails at runtime).
 if [[ ! -x .venv/bin/python ]]; then
   fail "Python venv missing (.venv/bin/python). Run ./install_idb.sh."
+elif ! .venv/bin/python -c "import sys" >/dev/null 2>&1; then
+  fail "Python venv broken (.venv/bin/python won't run — likely stale shebang from a renamed/moved repo). Delete .venv and run ./install_idb.sh."
 fi
 
-# fb-idb CLI inside the venv (used by Swift to query screen size + send touches)
+# fb-idb CLI inside the venv (used by Swift to query screen size + send touches).
+# Same trap: the wrapper script's shebang can point at a stale interpreter.
 if [[ ! -x .venv/bin/idb ]]; then
   fail "'.venv/bin/idb' missing (fb-idb Python pkg not installed). Run ./install_idb.sh."
+elif ! .venv/bin/idb --help >/dev/null 2>&1; then
+  fail "'.venv/bin/idb' present but won't execute (likely stale shebang from a renamed/moved repo). Delete .venv and run ./install_idb.sh."
 fi
 
 # Touch bridge script
