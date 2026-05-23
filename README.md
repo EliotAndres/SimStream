@@ -23,7 +23,16 @@ Grant both to Terminal (System Settings → Privacy & Security):
 
 When running inside a MacOS VM, you can force-enable those permissions by modifying TCC.db (integrity protection needs to be disabled, it's the case on Tart VMs) 
 
-## Installation
+## Installation (with agent skill)
+
+```sh
+npx skills add EliotAndres/SimStream
+```
+
+Installs a `/stream-simulator` skill into your coding agent. From then on, ask the agent to start SimStream (or paste an error) and it will handle setup, launch, permission prompts, and troubleshooting for you.
+
+## Installation (manual)
+
 ```sh
 ./install_idb.sh
 ```
