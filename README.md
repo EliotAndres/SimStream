@@ -4,6 +4,7 @@ Use the iOS Simulator screen on a browser (mobile or not). Low-latency, limited 
 
 ## Demo video
 
+https://github.com/EliotAndres/SimStream/raw/main/demo.mp4
 
 ## Dependencies
 
