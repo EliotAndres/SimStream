@@ -487,16 +487,12 @@
         if (decoder) { try { decoder.close(); } catch {} decoder = null; }
         awaitingKeyframe = true;
       } else if (wasHidden) {
-        log('visibility', 'visible — resuming stream');
+        log('visibility', 'visible — full reconnect');
         wasHidden = false;
-        setStatus('connecting', 'Resuming...');
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          // Server answers with a fresh video-init + keyframe.
-          sendJSON({ type: 'resume' });
-        } else {
-          // Lost the socket while hidden — start over.
-          connect();
-        }
+        // Soft 'resume' often leaves the stream stale (decoder/SCStream state
+        // doesn't survive long backgrounds reliably). Do what the in-app
+        // refresh button does: full disconnect + reconnect.
+        reconnect();
       }
     });
 
