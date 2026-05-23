@@ -3,18 +3,24 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-tunnel=0
+# Default: also expose the stream via cloudflared so an agent (Claude, etc.)
+# running off-device can open the URL. Pass --no-tunnel for a local-only run.
+tunnel=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --tunnel|-t) tunnel=1 ;;
+    --no-tunnel) tunnel=0 ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--tunnel]
+Usage: $0 [--no-tunnel]
 
 Starts the Swift streamer (which also serves the browser page and
 WebSocket on port 3738). Ctrl-C stops it.
 
-  --tunnel, -t   Also expose the running port via cloudflared.
+By default the port is also exposed via a Cloudflare tunnel so an agent
+(Claude, etc.) can open the public URL.
+
+  --no-tunnel   Local only — skip cloudflared. Use this when you're
+                viewing from a browser on the same machine or LAN.
 EOF
       exit 0
       ;;
@@ -60,9 +66,10 @@ if [[ ! -f idb_touch_events_bridge.py ]]; then
   fail "idb_touch_events_bridge.py not found in $(pwd). Re-clone the repo."
 fi
 
-# Tunnel-specific
+# cloudflared is required for the default (tunnel) mode — only check when
+# the user hasn't opted out with --no-tunnel.
 if [[ $tunnel -eq 1 ]] && ! command -v cloudflared >/dev/null 2>&1; then
-  fail "--tunnel requested but 'cloudflared' is not installed. Run: brew install cloudflared"
+  fail "'cloudflared' is not installed (needed for the default tunnel mode). Run: brew install cloudflared — or pass --no-tunnel for a local-only run."
 fi
 
 if [[ $errors -gt 0 ]]; then

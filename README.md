@@ -10,7 +10,7 @@ Use the iOS Simulator screen on a browser (mobile or not). Low-latency, limited 
 - Swift/Xcode
 - `idb_companion` (`brew install facebook/fb/idb-companion`): send touch events to the simulator
 - Python package manager (pip or uv) to run the idb Python bridge ()
-- Optional: `cloudflared` (`brew install cloudflared`) for `--tunnel`
+- `cloudflared` (`brew install cloudflared`): needed to expose the stream to an agent like Claude. Skip with `--no-tunnel` if you only want a local URL.
 - For streaming: Chrome 94+ or Safari 16.4+ (needs `VideoDecoder`)
 
 
@@ -41,8 +41,10 @@ Installs `idb-companion` via Homebrew and creates a Python venv for the touch br
 ## Run
 
 ```sh
-./start.sh            # serves http://localhost:3738
-./start.sh --tunnel   # also exposes it via cloudflared
+./start.sh              # default: serves http://localhost:3738 AND a Cloudflare tunnel
+                        # URL so an agent (Claude, etc.) can open the stream remotely.
+./start.sh --no-tunnel  # local only — skip cloudflared. Use when you're viewing
+                        # from a browser on the same machine or LAN.
 ```
 
 

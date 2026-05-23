@@ -1,6 +1,6 @@
 ---
 name: stream-simulator
-description: Install, launch, and troubleshoot SimStream — a low-latency iOS Simulator → browser streamer (macOS only). Use when the user wants to mirror the iOS Simulator to a phone/laptop browser, share a demo via tunnel, or fix SimStream startup errors (idb_companion missing, TCC permissions, port 3738 busy, VideoToolbox failures in VMs).
+description: Install, launch, and troubleshoot SimStream — a low-latency iOS Simulator → browser streamer (macOS only). Default launch exposes a Cloudflare tunnel URL so an off-device viewer like Claude can open the stream; falls back to local-only if cloudflared isn't installed. Use when the user wants to share their running Simulator with Claude (or any remote viewer), mirror the Simulator to a phone/laptop browser, or fix SimStream startup errors (idb_companion missing, TCC permissions, port 3738 busy, VideoToolbox failures in VMs).
 ---
 
 # stream-simulator
@@ -39,10 +39,11 @@ Prerequisites the script will refuse to proceed without:
 - **Xcode / Swift toolchain** — `xcode-select --install` (or full Xcode for the Simulator itself)
 - Either **`uv`** (`curl -LsSf https://astral.sh/uv/install.sh | sh`) or **`python3`** (`brew install python@3.12`)
 
-Optional, only for `--tunnel`:
+Recommended (used by default, needed to expose the stream to an off-device viewer like Claude):
 ```sh
 brew install cloudflared
 ```
+If cloudflared isn't installed, the skill falls back to a local-only run (`--no-tunnel`) and tells the user how to enable remote viewing — see step 5.
 
 ## 3. Grant macOS permissions (one-time, easy to miss)
 
@@ -78,10 +79,16 @@ Only proceed to step 5 once a simulator is confirmed Booted.
 
 ## 5. Launch
 
+`./start.sh` defaults to **tunnel mode** (serves `http://localhost:3738` *and* a Cloudflare public URL via `cloudflared`) so a remote viewer like Claude can open the stream. For a local-only run, pass `--no-tunnel`.
+
+**Before launching, check for `cloudflared`:**
+
 ```sh
-./start.sh              # http://localhost:3738
-./start.sh --tunnel     # also exposes via cloudflared, prints a public URL
+command -v cloudflared
 ```
+
+- **If present** → run `./start.sh` (default). Watch the cloudflared output for the public `https://*.trycloudflare.com` URL and hand it to the user.
+- **If absent** → run `./start.sh --no-tunnel` so the launch succeeds. Then tell the user, in one short line, that remote viewing (e.g. sharing with Claude) needs cloudflared and `brew install cloudflared` only takes a moment — they can install it and re-run for a public URL.
 
 `start.sh` runs preflight checks and aborts on the first failure with a clear message. Read the script's stderr — it tells you exactly which dep is missing.
 
@@ -105,7 +112,7 @@ Map the user's error to a fix:
 | Black frames in browser, no error | Screen Recording permission not granted to terminal | Grant in System Settings, then **fully quit and relaunch the terminal** |
 | Touches in browser don't reach simulator | Accessibility permission not granted, or no simulator booted | Grant Accessibility (relaunch terminal); boot a simulator |
 | `kVTVideoEncoderNotAvailableNowErr` in logs, stream never starts | VideoToolbox HW encoder unavailable (common in macOS VMs) | The encoder auto-falls back to SW after a few failed callbacks. To skip HW from frame 1: `SIMULATOR_STREAM_PREFER_SOFTWARE_ENCODER=1 ./start.sh` |
-| `--tunnel requested but 'cloudflared' is not installed` | cloudflared missing | `brew install cloudflared` |
+| `'cloudflared' is not installed (needed for the default tunnel mode)` | cloudflared missing and user wants a tunnel | `brew install cloudflared` — or relaunch with `./start.sh --no-tunnel` for a local-only run |
 | `'swift' not found` | No Xcode/CLT | `xcode-select --install` (or install Xcode) |
 | Browser loads page but video never appears | Browser too old, or no booted simulator | Use Chrome 94+ / Safari 16.4+; boot a simulator |
 | WebSocket disconnects, "viewer reconnect" loop | Network/tunnel hiccup | Refresh viewer tab; the server auto-recovers |
