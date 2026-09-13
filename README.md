@@ -1,5 +1,9 @@
 # About SimStream
 
+For Leo's existing Mac mini deployment, start with [AGENTS.md](AGENTS.md).
+It documents the private Tailscale setup and the actual capture-permission context.
+The upstream installation guide below is preserved for reference.
+
 Use the iOS Simulator screen on a browser (mobile or not). Low-latency, limited dependencies.
 
 ## Demo video

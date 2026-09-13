@@ -7,3 +7,6 @@
 
 # Logs
 /tmp/streamer.log
+
+# Claude Code personal overrides (model preference, local perms)
+.claude/settings.local.json
