@@ -291,6 +291,10 @@
     });
 
     // ─── WebCodecs decoder ────────────────────────────────────────────────────
+    // [sx, sy, sw, sh] of the device screen inside an uncropped window frame.
+    const FULL_WINDOW_CROPS = { '446x952': [27, 79, 393, 855] };
+    let crop = null;
+
     function configureDecoder(codec, width, height) {
       if (typeof VideoDecoder === 'undefined') {
         setStatus('error', 'Browser has no VideoDecoder (needs Safari 16.4+ / Chrome 94+)');
@@ -300,13 +304,27 @@
         try { decoder.close(); } catch {}
         decoder = null;
       }
-      canvas.width = width;
-      canvas.height = height;
+      // Mini deployment (2026-10-14): when the streamer can't measure the
+      // device screen via Accessibility — always the case while the mini's
+      // screen is locked, which is when on-demand starts happen — it streams
+      // the whole Simulator window (title bar + bezel) and maps touches
+      // straight across the frame, so taps land ~20pt off and small targets
+      // like Back miss. Crop full-window frames of a known size to the screen
+      // and let sendTouch normalize within the crop: the streamer's direct
+      // mapping is then exact. Geometry from the last good AX measurement
+      // (simstream.log, 2026-09-24): window 446x952 → screen (27,79) 393x855.
+      crop = FULL_WINDOW_CROPS[`${width}x${height}`] || null;
+      if (crop) log('crop', 'full-window frames → device screen', crop.join(','));
+      canvas.width = crop ? crop[2] : width;
+      canvas.height = crop ? crop[3] : height;
       decoder = new VideoDecoder({
         output: (frame) => {
           // iOS Safari is aggressive about memory pressure; close the frame the
           // moment we're done drawing or decoding stalls within seconds.
-          try { ctx.drawImage(frame, 0, 0, canvas.width, canvas.height); }
+          try {
+            if (crop) ctx.drawImage(frame, crop[0], crop[1], crop[2], crop[3], 0, 0, canvas.width, canvas.height);
+            else ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+          }
           finally { frame.close(); }
           framesDrawn++;
           if (framesDrawn === 1) setStatus('streaming', 'Streaming');
