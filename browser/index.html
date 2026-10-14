@@ -377,6 +377,35 @@
       framesDrawn = 0;
     }
 
+    // Mini deployment (2026-10-14): on-demand Start/Stop restarts the streamer,
+    // and a restart can also change this page. A dropped socket used to leave a
+    // dead "WS closed" screen, and the refresh button only reopened the socket,
+    // keeping a stale page. Reload the whole page instead — capped, so two
+    // viewers replacing each other (the server serves one) can't loop forever.
+    // When the stream is off, the reload lands on Tailscale's error page and stops.
+    function reloadSoon() {
+      if (document.hidden) return;      // the visibility handler reconnects on return
+      let recent = [];
+      try { recent = JSON.parse(sessionStorage.getItem('simstream-reloads') || '[]'); } catch {}
+      recent = recent.filter(t => Date.now() - t < 120000);
+      if (recent.length >= 3) { setStatus('error', 'Disconnected — tap ⟳ to retry'); return; }
+      recent.push(Date.now());
+      try { sessionStorage.setItem('simstream-reloads', JSON.stringify(recent)); } catch {}
+      setStatus('connecting', 'Reconnecting...');
+      // Wait for the streamer to answer before reloading: a reload during a
+      // restart lands on an error page that iOS won't retry by itself.
+      let tries = 0;
+      const poll = async () => {
+        try {
+          const r = await fetch('/', { cache: 'no-store' });
+          if (r.ok && (await r.text()).includes('FULL_WINDOW_CROPS')) { location.reload(); return; }
+        } catch {}
+        if (++tries >= 30) { setStatus('error', 'Stream is off — start it from Jarvis, then tap ⟳'); return; }
+        setTimeout(poll, 1500);
+      };
+      setTimeout(poll, 1000);
+    }
+
     function reconnect() {
       disconnect();
       setStatus('connecting', 'Reconnecting...');
@@ -388,7 +417,7 @@
       const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsProto}//${location.host}/ws`;
       log('connect', wsUrl);
-      ws = new WebSocket(wsUrl);
+      const sock = ws = new WebSocket(wsUrl);
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
@@ -419,12 +448,18 @@
       ws.onclose = (e) => {
         log('WS closed', `code=${e.code}`, `reason=${e.reason || '(empty)'}`, `wasClean=${e.wasClean}`);
         setStatus('error', 'WS closed');
+        if (ws !== sock) return;   // our own disconnect() already let go of it
+        reloadSoon();
       };
     }
 
     // ─── Buttons ─────────────────────────────────────────────────────────────
     homeBtn.addEventListener('click', () => sendJSON({ type: 'home' }));
-    refreshBtn.addEventListener('click', () => reconnect());
+    // A full reload, not just a new socket: it also picks up a changed page.
+    refreshBtn.addEventListener('click', () => {
+      try { sessionStorage.removeItem('simstream-reloads'); } catch {}
+      location.reload();
+    });
 
     // ─── Quality sliders ─────────────────────────────────────────────────────
     const settingsBtn   = document.getElementById('settings-btn');
