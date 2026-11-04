@@ -33,7 +33,7 @@ final class StreamingApp {
         Task {
             do {
                 try await captureManager.start()
-                touchInjector.setVideoIsCropped(captureManager.deviceScreenRect != nil)
+                touchInjector.setVideoIsCropped(captureManager.deviceScreenRect != nil, target: captureManager.windowTarget)
                 captureManager.onFrame = { [weak self] pixelBuffer, timestamp in
                     self?.streamManager.pushFrame(pixelBuffer, timestamp: timestamp)
                 }
@@ -50,7 +50,8 @@ final class StreamingApp {
                 print("[FATAL]       System Settings → Privacy & Security → Screen Recording")
                 print("[FATAL]       → re-enable Terminal, then ⌘Q Terminal and reopen.")
                 print("[FATAL]   • No display attached / running headless without a virtual display.")
-                print("[FATAL]   • iOS Simulator not running. Boot one in Xcode → Simulator.")
+                print("[FATAL]   • Device Hub not showing a booted device. Open it with:")
+                print("[FATAL]       open \"devices://device/open?id=<udid>\"")
                 print("════════════════════════════════════════════════════════════════════════")
                 exit(4)
             }

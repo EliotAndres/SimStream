@@ -64,9 +64,30 @@ Installs `idb-companion` via Homebrew and creates a Python venv for the touch br
 ```
 
 
+## Xcode 27 / Device Hub
+
+Xcode 27.2 replaces Simulator.app with Device Hub (`com.apple.dt.Devices`).
+Show a booted device with `open "devices://device/open?id=<udid>"`.
+SimStream prefers an iOS-titled device window and still supports legacy Simulator.
+Full Device Hub windows are switched to compact mode once at capture startup,
+because the full-mode AX tree does not expose the phone screen. Compact capture
+removes the top toolbar/group height measured through Accessibility; zoomed
+window points are scaled to the logical device size reported by idb for touches.
+If the compact switch or geometry is unavailable (including a switch timeout),
+the whole window is captured and precise touch mapping is not guaranteed.
+An already-compact window wider than 400 points is conservatively left uncropped
+when its mode cannot be confirmed; start with a narrower compact window in that case.
+
+Look for `[Capture] Found Device Hub window:`, followed by
+`[Capture] AX content rect in window:` and `[Capture] Cropping to content area:`.
+A full-mode startup also logs `[Capture] Switching Device Hub to compact mode`
+and `[Capture] Device Hub compact mode ready`. The legacy path retains
+`[Capture] Found Simulator window:`. The `ShowDeviceBezels` preference is written
+only when legacy Simulator.app is installed.
+
 ## Notes (AI Generated)
 
-- The Swift process disables `Window → Show Device Bezels` on launch (cleaner capture).
+- When legacy Simulator.app is installed, the Swift process disables `Window → Show Device Bezels` on launch (cleaner capture).
 - A single Swift binary handles capture, H.264 encoding (hardware with software fallback), HTTP, and WebSocket — no separate signaling server.
 - Touch events are forwarded to `idb_companion` over a persistent gRPC bridge (`idb_touch_events_bridge.py`).
 - Override the port with `PORT=xxxx swift run SimulatorStream`.

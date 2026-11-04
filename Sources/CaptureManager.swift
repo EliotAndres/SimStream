@@ -18,6 +18,7 @@ final class CaptureManager: NSObject, @unchecked Sendable {
     private var savedDebugJPEG = false
 
     private(set) var deviceScreenRect: CGRect?
+    private(set) var windowTarget: SimulatorWindow.Target?
 
     /// Source dimensions in points (either the cropped content rect or the whole window).
     /// Used by `updateConfig` to recompute output pixel size when maxHeight changes.
@@ -37,7 +38,7 @@ final class CaptureManager: NSObject, @unchecked Sendable {
             throw error
         }
 
-        let (contentFilter, windowSize) = try makeFilter(from: content)
+        let (contentFilter, windowSize) = try await makeFilter(from: content)
         let config = makeConfiguration(windowSize: windowSize)
         self.filter = contentFilter
         self.streamConfig = config
@@ -86,26 +87,52 @@ final class CaptureManager: NSObject, @unchecked Sendable {
         }
     }
 
-    private func makeFilter(from content: SCShareableContent) throws -> (SCContentFilter, CGSize?) {
-        if let window = content.windows.first(where: {
-            $0.owningApplication?.bundleIdentifier == "com.apple.iphonesimulator"
-        }) {
-            print("[Capture] Found Simulator window: \(window.title ?? "untitled") (\(window.frame.width)x\(window.frame.height))")
-            let size = CGSize(width: window.frame.width, height: window.frame.height)
-            return (SCContentFilter(desktopIndependentWindow: window), size)
+    private func makeFilter(from content: SCShareableContent) async throws -> (SCContentFilter, CGSize?) {
+        let candidates = content.windows.filter {
+            SimulatorWindow.bundleIDs.contains($0.owningApplication?.bundleIdentifier ?? "")
+        }.sorted { lhs, rhs in
+            let leftPriority = SimulatorWindow.titlePriority(lhs.title ?? "")
+            let rightPriority = SimulatorWindow.titlePriority(rhs.title ?? "")
+            if leftPriority != rightPriority { return leftPriority > rightPriority }
+            let leftHub = lhs.owningApplication?.bundleIdentifier == SimulatorWindow.deviceHubBundleID
+            let rightHub = rhs.owningApplication?.bundleIdentifier == SimulatorWindow.deviceHubBundleID
+            if leftHub != rightHub { return leftHub }
+            return lhs.windowID < rhs.windowID
+        }
+        if var window = candidates.first, let app = window.owningApplication {
+            var target = SimulatorWindow.Target(processID: app.processID, bundleID: app.bundleIdentifier,
+                                               title: window.title ?? "", frame: window.frame)
+            let isDeviceHub = app.bundleIdentifier == SimulatorWindow.deviceHubBundleID
+            if isDeviceHub {
+                let compact = try await SimulatorWindow.prepareDeviceHub(target)
+                // SCWindow frames are snapshots: refresh after the AX resize before
+                // configuring output dimensions or creating the content filter.
+                let refreshed = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                guard let updated = refreshed.windows.first(where: { $0.windowID == window.windowID }) else {
+                    throw CaptureError.windowUnavailable
+                }
+                window = updated
+                target = SimulatorWindow.Target(processID: app.processID, bundleID: app.bundleIdentifier,
+                                                title: window.title ?? "", frame: window.frame,
+                                                compactConfirmed: compact)
+            }
+            windowTarget = target
+            let name = isDeviceHub ? "Device Hub" : "Simulator"
+            print("[Capture] Found \(name) window: \(window.title ?? "untitled") (\(window.frame.width)x\(window.frame.height))")
+            return (SCContentFilter(desktopIndependentWindow: window), window.frame.size)
         }
 
-        if let app = content.applications.first(where: {
-            $0.bundleIdentifier == "com.apple.iphonesimulator"
-        }), let display = content.displays.first {
-            print("[Capture] Found Simulator app, capturing all its windows")
-            return (SCContentFilter(display: display, including: [app], exceptingWindows: []), nil)
+        for bundleID in SimulatorWindow.bundleIDs {
+            if let app = content.applications.first(where: { $0.bundleIdentifier == bundleID }),
+               let display = content.displays.first {
+                let name = bundleID == SimulatorWindow.deviceHubBundleID ? "Device Hub" : "Simulator"
+                print("[Capture] Found \(name) app, capturing all its windows")
+                return (SCContentFilter(display: display, including: [app], exceptingWindows: []), nil)
+            }
         }
 
-        guard let display = content.displays.first else {
-            throw CaptureError.noDisplay
-        }
-        print("[Capture] Warning: Simulator not found, capturing entire display")
+        guard let display = content.displays.first else { throw CaptureError.noDisplay }
+        print("[Capture] Warning: Device Hub / Simulator not found, capturing entire display")
         return (SCContentFilter(display: display, excludingApplications: [], exceptingWindows: []), nil)
     }
 
@@ -184,71 +211,19 @@ final class CaptureManager: NSObject, @unchecked Sendable {
     /// the Simulator window. Returns a rect in window-local points suitable
     /// for SCStreamConfiguration.sourceRect, or nil on failure.
     private func detectSimulatorContentRect() -> CGRect? {
-        guard let app = NSWorkspace.shared.runningApplications.first(where: {
-            $0.bundleIdentifier == "com.apple.iphonesimulator"
-        }) else {
-            print("[Capture] Simulator app not found for content rect detection")
+        guard let target = windowTarget, let metrics = SimulatorWindow.metrics(for: target) else {
+            print("[Capture] Could not find content rect via Accessibility; capturing whole window")
             return nil
         }
-
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        var windowsRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        guard let windows = windowsRef as? [AXUIElement] else { return nil }
-
-        for win in windows {
-            var subroleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXSubroleAttribute as CFString, &subroleRef)
-            guard (subroleRef as? String) == "AXStandardWindow" else { continue }
-
-            // Get window origin in screen coords
-            var winPos = CGPoint.zero
-            var posRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef)
-            if let posRef { AXValueGetValue(posRef as! AXValue, .cgPoint, &winPos) }
-
-            var winSize = CGSize.zero
-            var sizeRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef)
-            if let sizeRef { AXValueGetValue(sizeRef as! AXValue, .cgSize, &winSize) }
-
-            // Find the AXGroup child -- this is the device screen content area
-            var childrenRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXChildrenAttribute as CFString, &childrenRef)
-            guard let children = childrenRef as? [AXUIElement] else { continue }
-
-            for child in children {
-                var roleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
-                guard (roleRef as? String) == "AXGroup" else { continue }
-
-                var childPos = CGPoint.zero
-                var cPosRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(child, kAXPositionAttribute as CFString, &cPosRef)
-                if let cPosRef { AXValueGetValue(cPosRef as! AXValue, .cgPoint, &childPos) }
-
-                var childSize = CGSize.zero
-                var cSizeRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(child, kAXSizeAttribute as CFString, &cSizeRef)
-                if let cSizeRef { AXValueGetValue(cSizeRef as! AXValue, .cgSize, &childSize) }
-
-                guard childSize.width > 0, childSize.height > 0 else { continue }
-
-                let offsetX = childPos.x - winPos.x
-                let offsetY = childPos.y - winPos.y
-                let rect = CGRect(x: offsetX, y: offsetY, width: childSize.width, height: childSize.height)
-                print("[Capture] AX content rect in window: \(rect)  (window \(winSize.width)x\(winSize.height))")
-                return rect
-            }
-        }
-
-        print("[Capture] Could not find content group via Accessibility")
-        return nil
+        let rect = metrics.contentRect
+        print("[Capture] AX content rect in window: \(rect)  (window \(metrics.windowFrame.width)x\(metrics.windowFrame.height))")
+        return rect
     }
 }
 
 enum CaptureError: Error {
     case noDisplay
+    case windowUnavailable
 }
 
 extension CaptureManager: SCStreamOutput {

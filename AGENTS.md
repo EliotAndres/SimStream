@@ -38,3 +38,15 @@ of the upstream Swift iOS Simulator streamer, not the whole-desktop stream.
 This project has no separate memory index on the mini. Use the linked infrastructure
 deployment document and its canonical memory index at
 `~/Vibe Coding Infra/claude/memory/MEMORY.md` for relevant historical context.
+
+## Xcode 27 / Device Hub
+
+Xcode 27.2 uses DeviceHub.app (`com.apple.dt.Devices`) instead of Simulator.app.
+Capture supports both, preferring an iOS-titled window. On stream startup, full
+Device Hub windows switch once to compact mode via AXPress; capture and touch
+mapping share the AX-measured top toolbar/group height. A failed switch/measurement
+falls back to the whole window, where touch mapping may be inaccurate. No fixed
+23-point inset or 1:1 device/window scale is assumed. Look for
+`[Capture] Found Device Hub window:` plus `[Capture] AX content rect in window:`
+and `[Capture] Cropping to content area:`. See README for the wide-compact fallback.
+Do not exercise the mode switch during read-only validation.

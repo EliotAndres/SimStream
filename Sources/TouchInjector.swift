@@ -13,6 +13,7 @@ final class TouchInjector {
     /// and touch coordinates must be adjusted. When true, the video is already cropped
     /// to the device screen and direct mapping is correct.
     private var videoIsCropped: Bool = true
+    private var windowTarget: SimulatorWindow.Target?
 
     /// Top bar height in macOS window points (from Accessibility API).
     private var topBarOffsetMacOS: Double = 0
@@ -44,8 +45,13 @@ final class TouchInjector {
         }
     }
 
-    func setVideoIsCropped(_ isCropped: Bool) {
-        queue.async { self.videoIsCropped = isCropped }
+    func setVideoIsCropped(_ isCropped: Bool, target: SimulatorWindow.Target?) {
+        queue.async {
+            self.videoIsCropped = isCropped
+            self.windowTarget = target
+            // A viewer may have resolved touches while capture was switching modes.
+            self.updateWindowMetrics()
+        }
         print("[Touch] Video is \(isCropped ? "cropped to device screen (direct mapping)" : "full window — applying top bar correction")")
     }
 
@@ -135,14 +141,7 @@ final class TouchInjector {
                 exit(7)
             }
 
-            if let metrics = self.detectWindowMetrics() {
-                self.topBarOffsetMacOS = metrics.topBarOffset
-                self.windowHeightMacOS = metrics.windowHeight
-                self.contentHeightMacOS = metrics.contentHeight
-                print("[Touch] Top bar offset: \(metrics.topBarOffset) pts, window: \(metrics.windowHeight) pts, content: \(metrics.contentHeight) pts")
-            } else {
-                print("[Touch] WARN: could not detect window metrics via Accessibility — touches will use direct mapping (may be offset if video isn't cropped). Grant Accessibility permission to fix.")
-            }
+            self.updateWindowMetrics()
 
             let socketPath = "/tmp/idb/\(udid)_companion.sock"
             guard FileManager.default.fileExists(atPath: socketPath) else {
@@ -392,56 +391,24 @@ final class TouchInjector {
     /// Uses macOS Accessibility to find the simulator top bar height and total window height.
     /// Returns values in macOS window points (same coordinate space as SCStream sourceRect).
     private func detectWindowMetrics() -> (topBarOffset: Double, windowHeight: Double, contentHeight: Double)? {
-        guard let app = NSWorkspace.shared.runningApplications.first(where: {
-            $0.bundleIdentifier == "com.apple.iphonesimulator"
-        }) else { return nil }
+        guard let target = windowTarget, let metrics = SimulatorWindow.metrics(for: target) else { return nil }
+        return (topBarOffset: Double(metrics.contentRect.minY),
+                windowHeight: Double(metrics.windowFrame.height),
+                contentHeight: Double(metrics.contentRect.height))
+    }
 
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        var windowsRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        guard let windows = windowsRef as? [AXUIElement] else { return nil }
-
-        for win in windows {
-            var subroleRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXSubroleAttribute as CFString, &subroleRef)
-            guard (subroleRef as? String) == "AXStandardWindow" else { continue }
-
-            var winPos = CGPoint.zero
-            var posRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXPositionAttribute as CFString, &posRef)
-            if let posRef { AXValueGetValue(posRef as! AXValue, .cgPoint, &winPos) }
-
-            var winSize = CGSize.zero
-            var sizeRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXSizeAttribute as CFString, &sizeRef)
-            if let sizeRef { AXValueGetValue(sizeRef as! AXValue, .cgSize, &winSize) }
-            guard winSize.height > 0 else { continue }
-
-            var childrenRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(win, kAXChildrenAttribute as CFString, &childrenRef)
-            guard let children = childrenRef as? [AXUIElement] else { continue }
-
-            for child in children {
-                var roleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleRef)
-                guard (roleRef as? String) == "AXGroup" else { continue }
-
-                var childPos = CGPoint.zero
-                var cPosRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(child, kAXPositionAttribute as CFString, &cPosRef)
-                if let cPosRef { AXValueGetValue(cPosRef as! AXValue, .cgPoint, &childPos) }
-
-                var childSize = CGSize.zero
-                var cSizeRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(child, kAXSizeAttribute as CFString, &cSizeRef)
-                if let cSizeRef { AXValueGetValue(cSizeRef as! AXValue, .cgSize, &childSize) }
-                guard childSize.height > 0 else { continue }
-
-                let topBarOffset = Double(childPos.y - winPos.y)
-                return (topBarOffset: topBarOffset, windowHeight: Double(winSize.height), contentHeight: Double(childSize.height))
-            }
+    private func updateWindowMetrics() {
+        topBarOffsetMacOS = 0
+        windowHeightMacOS = 0
+        contentHeightMacOS = 0
+        if let metrics = detectWindowMetrics() {
+            topBarOffsetMacOS = metrics.topBarOffset
+            windowHeightMacOS = metrics.windowHeight
+            contentHeightMacOS = metrics.contentHeight
+            print("[Touch] Top bar offset: \(metrics.topBarOffset) pts, window: \(metrics.windowHeight) pts, content: \(metrics.contentHeight) pts")
+        } else {
+            print("[Touch] WARN: could not detect window metrics via Accessibility — touches will use direct mapping (may be offset if video isn't cropped).")
         }
-        return nil
     }
 
     /// Returns the python interpreter from the uv-managed venv created by install.sh.

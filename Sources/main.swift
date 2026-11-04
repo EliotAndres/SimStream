@@ -10,15 +10,20 @@ setbuf(stdout, nil)
 // with SIGPIPE. We catch the resulting EPIPE explicitly at the write site.
 signal(SIGPIPE, SIG_IGN)
 
-// Disable simulator device bezels for a cleaner capture
-do {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
-    p.arguments = ["write", "com.apple.iphonesimulator", "ShowDeviceBezels", "-bool", "false"]
-    try p.run()
-    p.waitUntilExit()
-} catch {
-    print("[App] Warning: could not disable simulator bezels: \(error)")
+// The legacy bezel preference has no effect on Device Hub (Xcode 27+).
+if let simulatorURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.iphonesimulator"),
+   FileManager.default.fileExists(atPath: simulatorURL.path) {
+    do {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        p.arguments = ["write", "com.apple.iphonesimulator", "ShowDeviceBezels", "-bool", "false"]
+        try p.run()
+        p.waitUntilExit()
+    } catch {
+        print("[App] Warning: could not disable simulator bezels: \(error)")
+    }
+} else {
+    print("[App] Simulator.app not installed; skipping legacy ShowDeviceBezels preference (Device Hub)")
 }
 
 // Permission preflight — fail loudly with troubleshooting if anything is missing.
