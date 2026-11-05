@@ -103,6 +103,27 @@ enum SimulatorWindow {
         }.max()
     }
 
+    /// Compact Device Hub draws the phone screen as an AXGroup inset inside the
+    /// window (e.g. 188x410 at local (21,61) in a 230x532 window) with a button
+    /// strip underneath, so "everything below the top bar" is NOT the device.
+    /// Pick the largest AXGroup that sits below the bar and is narrower than the window.
+    static func deviceScreenFrame(in window: AXUIElement, frame windowFrame: CGRect, top: CGFloat) -> CGRect? {
+        var best: CGRect?
+        var pending = children(window).map { ($0, 1) }
+        var visited = 0
+        while let (element, depth) = pending.popLast(), visited < 64 {
+            visited += 1
+            guard attribute(element, kAXRoleAttribute) as? String == "AXGroup",
+                  let rect = frame(element) else { continue }
+            let inset = rect.width < windowFrame.width - 2
+                && rect.minY >= windowFrame.minY + top - 1
+                && windowFrame.insetBy(dx: -1, dy: -1).contains(rect)
+            if inset, rect.width * rect.height > (best.map { $0.width * $0.height } ?? 0) { best = rect }
+            if depth < 2 { pending += children(element).map { ($0, depth + 1) } }
+        }
+        return best
+    }
+
     /// Called once before capture, never from the touch pipeline.
     /// Returns true only when compact geometry is established.
     static func prepareDeviceHub(_ target: Target) async throws -> Bool {
@@ -112,7 +133,11 @@ enum SimulatorWindow {
             return false
         }
         guard let button = compactButton(in: window, deadline: deadline) else {
-            if Date() < deadline, originalFrame.width <= 400, topBarHeight(in: window, frame: originalFrame) != nil {
+            // No compact switch means the window is already compact. Confirm by the
+            // inset device element rather than by width: a compact window can be
+            // dragged larger than any fixed threshold.
+            if Date() < deadline, let top = topBarHeight(in: window, frame: originalFrame),
+               originalFrame.width <= 400 || deviceScreenFrame(in: window, frame: originalFrame, top: top) != nil {
                 return true
             }
             print("[Capture] Device Hub compact switch not found; capturing whole window")
@@ -145,6 +170,11 @@ enum SimulatorWindow {
         if target.bundleID == deviceHubBundleID {
             guard target.compactConfirmed,
                   let top = topBarHeight(in: window, frame: windowFrame) else { return nil }
+            if let screen = deviceScreenFrame(in: window, frame: windowFrame, top: top) {
+                return Metrics(windowFrame: windowFrame,
+                               contentRect: screen.offsetBy(dx: -windowFrame.minX, dy: -windowFrame.minY))
+            }
+            // No inset device element found: fall back to everything below the top bar.
             return Metrics(windowFrame: windowFrame,
                            contentRect: CGRect(x: 0, y: top, width: windowFrame.width,
                                                height: windowFrame.height - top))

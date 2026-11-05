@@ -85,6 +85,18 @@ and `[Capture] Device Hub compact mode ready`. The legacy path retains
 `[Capture] Found Simulator window:`. The `ShowDeviceBezels` preference is written
 only when legacy Simulator.app is installed.
 
+**Picture size.** The compact window opens small (about 188x410 points for an
+iPhone 17 Pro) and Device Hub disables its zoom commands in compact mode. Drag
+the window's corner to enlarge it; SimStream crops to the phone element at
+whatever size it finds, so a larger window is a sharper stream.
+
+**Permissions and rebuilds.** macOS ties Screen Recording and Accessibility to
+the binary's code signature. An ad-hoc build gets a new signature on every
+rebuild, and the existing entries in System Settings then look enabled but no
+longer match (remove them with "-" and add the binary again). Put a signing
+identity in `SIMSTREAM_CODESIGN_IDENTITY` or a `.codesign-identity` file and
+`start.sh` signs the build so the grants persist.
+
 ## Notes (AI Generated)
 
 - When legacy Simulator.app is installed, the Swift process disables `Window → Show Device Bezels` on launch (cleaner capture).
