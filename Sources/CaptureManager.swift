@@ -87,8 +87,9 @@ final class CaptureManager: NSObject, @unchecked Sendable {
         }
     }
 
-    private func makeFilter(from content: SCShareableContent) async throws -> (SCContentFilter, CGSize?) {
-        let candidates = content.windows.filter {
+    /// Simulator / Device Hub windows, best capture candidate first.
+    private static func deviceWindows(in content: SCShareableContent) -> [SCWindow] {
+        content.windows.filter {
             SimulatorWindow.bundleIDs.contains($0.owningApplication?.bundleIdentifier ?? "")
         }.sorted { lhs, rhs in
             let leftPriority = SimulatorWindow.titlePriority(lhs.title ?? "")
@@ -99,6 +100,10 @@ final class CaptureManager: NSObject, @unchecked Sendable {
             if leftHub != rightHub { return leftHub }
             return lhs.windowID < rhs.windowID
         }
+    }
+
+    private func makeFilter(from content: SCShareableContent) async throws -> (SCContentFilter, CGSize?) {
+        let candidates = Self.deviceWindows(in: content)
         if var window = candidates.first, let app = window.owningApplication {
             var target = SimulatorWindow.Target(processID: app.processID, bundleID: app.bundleIdentifier,
                                                title: window.title ?? "", frame: window.frame)
@@ -107,10 +112,21 @@ final class CaptureManager: NSObject, @unchecked Sendable {
                 let compact = try await SimulatorWindow.prepareDeviceHub(target)
                 // SCWindow frames are snapshots: refresh after the AX resize before
                 // configuring output dimensions or creating the content filter.
-                let refreshed = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-                guard let updated = refreshed.windows.first(where: { $0.windowID == window.windowID }) else {
-                    throw CaptureError.windowUnavailable
+                // Switching Device Hub to compact REPLACES the window (new windowID),
+                // so the pre-switch SCWindow is gone: keep it if it survived,
+                // otherwise re-select the Device Hub window from fresh content. The
+                // new window can take a moment to come on screen.
+                var updated: SCWindow?
+                for _ in 0..<10 {
+                    let refreshed = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+                    updated = refreshed.windows.first(where: { $0.windowID == window.windowID })
+                        ?? Self.deviceWindows(in: refreshed).first(where: {
+                            $0.owningApplication?.bundleIdentifier == SimulatorWindow.deviceHubBundleID
+                        })
+                    if updated != nil { break }
+                    try await Task.sleep(nanoseconds: 200_000_000)
                 }
+                guard let updated else { throw CaptureError.windowUnavailable }
                 window = updated
                 target = SimulatorWindow.Target(processID: app.processID, bundleID: app.bundleIdentifier,
                                                 title: window.title ?? "", frame: window.frame,
