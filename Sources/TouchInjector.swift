@@ -347,6 +347,15 @@ final class TouchInjector {
 
     /// SpringBoard often reports 0×0 in `describe-all` briefly after boot; retry before giving up (VM/template races).
     private func queryScreenSizeWithRetries(udid: String) -> CGSize? {
+        // Prefer the device description: it reports logical points without touching
+        // the foreground app's accessibility tree. `describe-all` returns a 0x0
+        // frame whenever that app was launched while the simulator's
+        // ApplicationAccessibilityEnabled switch was off (XCTest and Xcode
+        // automation sessions turn it off when they end), which used to abort here.
+        if let size = queryDeviceDescriptionSize(udid: udid) {
+            print("[Touch] Screen size from device description: \(size.width)x\(size.height) points")
+            return size
+        }
         let maxAttempts = 30
         let delaySeconds: TimeInterval = 1.5
         for attempt in 1...maxAttempts {
@@ -363,6 +372,20 @@ final class TouchInjector {
             }
         }
         return nil
+    }
+
+    /// `idb describe --json` → screen_dimensions.width_points / height_points.
+    private func queryDeviceDescriptionSize(udid: String) -> CGSize? {
+        let output = shell("idb", "describe", "--udid", udid, "--json")
+        guard let data = output.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let screen = object["screen_dimensions"] as? [String: Any] else { return nil }
+        func number(_ key: String) -> Double {
+            (screen[key] as? Double) ?? Double(screen[key] as? Int ?? 0)
+        }
+        let width = number("width_points"), height = number("height_points")
+        guard width > 0, height > 0 else { return nil }
+        return CGSize(width: width, height: height)
     }
 
     private func queryScreenSizeOnce(udid: String, logFailures: Bool = true) -> CGSize? {
