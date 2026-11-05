@@ -53,8 +53,16 @@ enum SimulatorWindow {
             attribute($0, kAXSubroleAttribute) as? String == "AXStandardWindow"
         }
         // Match the captured window, never a different device's first AX window.
-        let titled = windows.filter { attribute($0, kAXTitleAttribute) as? String == target.title }
-        return titled.min { lhs, rhs in
+        // ScreenCaptureKit reports "iPhone 17 Pro" where AX reports
+        // "iPhone 17 Pro – iOS 27.2", so match on a shared prefix, not equality.
+        let titled = windows.filter { window in
+            guard let title = attribute(window, kAXTitleAttribute) as? String else { return false }
+            if title == target.title { return true }
+            guard !target.title.isEmpty, !title.isEmpty else { return false }
+            return title.hasPrefix(target.title) || target.title.hasPrefix(title)
+        }
+        // With no title match, fall back to the AX window nearest the captured frame.
+        return (titled.isEmpty ? windows : titled).min { lhs, rhs in
             func distance(_ element: AXUIElement) -> CGFloat {
                 guard let rect = frame(element) else { return .greatestFiniteMagnitude }
                 return abs(rect.minX - target.frame.minX) + abs(rect.minY - target.frame.minY)

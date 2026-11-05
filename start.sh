@@ -109,7 +109,24 @@ cleanup() {
 trap cleanup INT TERM
 
 echo "[start] Swift streamer on http://localhost:$PORT"
-PORT=$PORT swift run SimulatorStream &
+# Build first and run the product directly so it can be signed. macOS ties
+# Screen Recording and Accessibility grants to the code signature: an ad-hoc
+# build gets a new signature (and loses both grants) on every rebuild. Set
+# SIMSTREAM_CODESIGN_IDENTITY (e.g. "Apple Development: Name (TEAMID)"), or put
+# that string in a git-ignored .codesign-identity file next to this script, to
+# sign with a stable identity so the grants survive rebuilds.
+swift build --product SimulatorStream
+streamer="$(swift build --show-bin-path)/SimulatorStream"
+identity="${SIMSTREAM_CODESIGN_IDENTITY:-}"
+if [[ -z "$identity" && -f .codesign-identity ]]; then identity="$(head -1 .codesign-identity)"; fi
+if [[ -n "$identity" ]]; then
+  if codesign --force --sign "$identity" --identifier dev.simstream.SimulatorStream "$streamer"; then
+    echo "[start] Signed streamer with $identity"
+  else
+    echo "[start] WARN: codesign failed; macOS permissions will reset on the next rebuild" >&2
+  fi
+fi
+PORT=$PORT "$streamer" &
 pids+=($!)
 
 if [[ $tunnel -eq 1 ]]; then

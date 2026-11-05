@@ -10,3 +10,4 @@
 
 # Claude Code personal overrides (model preference, local perms)
 .claude/settings.local.json
+.codesign-identity
